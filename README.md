@@ -14,3 +14,8 @@
 <img width="1109" height="920" alt="image" src="https://github.com/user-attachments/assets/d1d0b605-48ef-4a49-98b8-b038d8500f13" />
 
 без токена или с неверным токеном выдаёт ошибку
+
+консоль:
+
+<img width="1103" height="639" alt="image" src="https://github.com/user-attachments/assets/159ba312-3a64-4996-b330-b55cd81964d3" />
+
