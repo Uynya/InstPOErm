@@ -5,9 +5,14 @@ using System.Text;
 using System.Net;
 using System.IO;
 using System.Text.Json;
+using System.Security.Cryptography;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 
 namespace _10_2
 {
+    // Модели для API ответов
     public class ApiResponse<T>
     {
         public T Data { get; set; }
@@ -32,6 +37,7 @@ namespace _10_2
         public List<ValidationError> Errors { get; set; }
     }
 
+    // Модели для задач
     public class CreateTaskRequest
     {
         public string Title { get; set; }
@@ -50,10 +56,49 @@ namespace _10_2
         public string Priority { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? DueDate { get; set; }
+        public int UserId { get; set; }
+    }
+
+    // Модели для аутентификации
+    public class User
+    {
+        public int Id { get; set; }
+        public string Email { get; set; }
+        public string PasswordHash { get; set; }
+        public string Name { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class RegisterRequest
+    {
+        public string Email { get; set; }
+        public string Password { get; set; }
+        public string Name { get; set; }
+    }
+
+    public class LoginRequest
+    {
+        public string Email { get; set; }
+        public string Password { get; set; }
+    }
+
+    public class LoginResponse
+    {
+        public string Token { get; set; }
+        public string Email { get; set; }
+        public DateTime ExpiresAt { get; set; }
+        public string Name { get; set; }
     }
 
     class Program
     {
+        // JWT настройки
+        private const string JwtSecretKey = "your-super-secret-key-with-at-least-32-characters-long!";
+        private const string JwtIssuer = "SimpleApiServer";
+        private const string JwtAudience = "SimpleApiClient";
+        private const int JwtExpirationMinutes = 60;
+
+        // Хранилища данных
         static List<TaskItem> _tasks = new List<TaskItem>
         {
             new TaskItem {
@@ -63,7 +108,8 @@ namespace _10_2
                 IsCompleted = false,
                 Priority = "high",
                 CreatedAt = DateTime.Now.AddDays(-2),
-                DueDate = DateTime.Now.AddDays(1)
+                DueDate = DateTime.Now.AddDays(1),
+                UserId = 1
             },
             new TaskItem {
                 Id = 2,
@@ -72,7 +118,8 @@ namespace _10_2
                 IsCompleted = true,
                 Priority = "medium",
                 CreatedAt = DateTime.Now.AddDays(-1),
-                DueDate = DateTime.Now
+                DueDate = DateTime.Now,
+                UserId = 1
             },
             new TaskItem {
                 Id = 3,
@@ -81,7 +128,20 @@ namespace _10_2
                 IsCompleted = false,
                 Priority = "low",
                 CreatedAt = DateTime.Now,
-                DueDate = DateTime.Now.AddDays(2)
+                DueDate = DateTime.Now.AddDays(2),
+                UserId = 1
+            }
+        };
+
+        static List<User> _users = new List<User>
+        {
+            new User
+            {
+                Id = 1,
+                Email = "test@example.com",
+                PasswordHash = HashPassword("test123"),
+                Name = "Test User",
+                CreatedAt = DateTime.Now.AddDays(-5)
             }
         };
 
@@ -92,6 +152,9 @@ namespace _10_2
             listener.Start();
 
             Console.WriteLine("Сервер запущен: http://localhost:5000/");
+            Console.WriteLine("JWT Issuer: " + JwtIssuer);
+            Console.WriteLine("JWT Audience: " + JwtAudience);
+            Console.WriteLine();
 
             while (true)
             {
@@ -108,7 +171,17 @@ namespace _10_2
 
                     try
                     {
-                        if (path == "/api/tasks" && method == "GET")
+                        // Маршруты аутентификации (публичные)
+                        if (path == "/api/auth/register" && method == "POST")
+                        {
+                            HandleRegister(request, response);
+                        }
+                        else if (path == "/api/auth/login" && method == "POST")
+                        {
+                            HandleLogin(request, response);
+                        }
+                        // Маршруты для задач (защищенные)
+                        else if (path == "/api/tasks" && method == "GET")
                         {
                             HandleGetTasks(request, response);
                         }
@@ -176,6 +249,126 @@ namespace _10_2
                     Console.WriteLine($"Критическая ошибка: {ex.Message}");
                 }
             }
+        }
+
+        // Хэширование пароля
+        static string HashPassword(string password)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] hashedBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
+                return Convert.ToBase64String(hashedBytes);
+            }
+        }
+
+        // Проверка пароля
+        static bool VerifyPassword(string password, string hash)
+        {
+            return HashPassword(password) == hash;
+        }
+
+        // Генерация JWT токена
+        static string GenerateJwtToken(User user)
+        {
+            var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSecretKey));
+            var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
+
+            var claims = new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Name, user.Name ?? user.Email),
+                new Claim("UserId", user.Id.ToString())
+            };
+
+            var token = new JwtSecurityToken(
+                issuer: JwtIssuer,
+                audience: JwtAudience,
+                claims: claims,
+                expires: DateTime.UtcNow.AddMinutes(JwtExpirationMinutes),
+                signingCredentials: credentials
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        // Валидация JWT токена
+        static bool ValidateJwtToken(string token, out ClaimsPrincipal principal)
+        {
+            principal = null;
+            try
+            {
+                var tokenHandler = new JwtSecurityTokenHandler();
+                var validationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSecretKey)),
+                    ValidateIssuer = true,
+                    ValidIssuer = JwtIssuer,
+                    ValidateAudience = true,
+                    ValidAudience = JwtAudience,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.Zero
+                };
+
+                principal = tokenHandler.ValidateToken(token, validationParameters, out _);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Извлечение пользователя из токена
+        static bool TryGetUserFromToken(HttpListenerRequest request, out User user)
+        {
+            user = null;
+            string authHeader = request.Headers["Authorization"];
+
+            if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
+            {
+                return false;
+            }
+
+            string token = authHeader.Substring("Bearer ".Length);
+
+            if (!ValidateJwtToken(token, out ClaimsPrincipal principal))
+            {
+                return false;
+            }
+
+            string userIdClaim = principal.FindFirst("UserId")?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return false;
+            }
+
+            user = _users.FirstOrDefault(u => u.Id == userId);
+            return user != null;
+        }
+
+        // Проверка авторизации для защищенных маршрутов
+        static bool CheckAuthorization(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            if (!TryGetUserFromToken(request, out User user))
+            {
+                WriteUnauthorized(response);
+                return false;
+            }
+            return true;
+        }
+
+        // Возврат 401 Unauthorized
+        static void WriteUnauthorized(HttpListenerResponse response)
+        {
+            var errorResponse = new
+            {
+                error = "Unauthorized",
+                message = "Требуется авторизация"
+            };
+            string json = JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            WriteJson(response, json, 401);
         }
 
         static void WriteJson(HttpListenerResponse response, string json, int statusCode = 200)
@@ -264,12 +457,168 @@ namespace _10_2
             return result;
         }
 
-        static void HandleGetTasks(HttpListenerRequest request, HttpListenerResponse response)
+        // Обработчики для аутентификации
+        static void HandleRegister(HttpListenerRequest request, HttpListenerResponse response)
         {
             try
             {
+                using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
+                {
+                    string body = reader.ReadToEnd();
+
+                    if (string.IsNullOrWhiteSpace(body))
+                    {
+                        WriteValidationError(response, "Тело запроса не может быть пустым");
+                        return;
+                    }
+
+                    RegisterRequest registerData;
+                    try
+                    {
+                        var options = new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        };
+                        registerData = JsonSerializer.Deserialize<RegisterRequest>(body, options);
+                    }
+                    catch (JsonException)
+                    {
+                        WriteValidationError(response, "Некорректный формат JSON");
+                        return;
+                    }
+
+                    if (registerData == null || string.IsNullOrEmpty(registerData.Email) || string.IsNullOrEmpty(registerData.Password))
+                    {
+                        WriteValidationError(response, "Email и пароль обязательны");
+                        return;
+                    }
+
+                    // Проверка уникальности email
+                    if (_users.Any(u => u.Email.Equals(registerData.Email, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        WriteError(response, 400, "Пользователь с таким email уже существует", "EMAIL_EXISTS");
+                        return;
+                    }
+
+                    // Создание нового пользователя
+                    var newUser = new User
+                    {
+                        Id = _users.Count > 0 ? _users.Max(u => u.Id) + 1 : 1,
+                        Email = registerData.Email.ToLower(),
+                        PasswordHash = HashPassword(registerData.Password),
+                        Name = registerData.Name,
+                        CreatedAt = DateTime.Now
+                    };
+
+                    _users.Add(newUser);
+
+                    // Генерация токена
+                    string token = GenerateJwtToken(newUser);
+
+                    var responseData = new LoginResponse
+                    {
+                        Token = token,
+                        Email = newUser.Email,
+                        ExpiresAt = DateTime.UtcNow.AddMinutes(JwtExpirationMinutes),
+                        Name = newUser.Name
+                    };
+
+                    WriteSuccess(response, responseData, 201);
+                    Console.WriteLine($"Зарегистрирован новый пользователь: {newUser.Email}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка в HandleRegister: {ex.Message}");
+                WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
+            }
+        }
+
+        static void HandleLogin(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            try
+            {
+                using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
+                {
+                    string body = reader.ReadToEnd();
+
+                    if (string.IsNullOrWhiteSpace(body))
+                    {
+                        WriteValidationError(response, "Тело запроса не может быть пустым");
+                        return;
+                    }
+
+                    LoginRequest loginData;
+                    try
+                    {
+                        var options = new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        };
+                        loginData = JsonSerializer.Deserialize<LoginRequest>(body, options);
+                    }
+                    catch (JsonException)
+                    {
+                        WriteValidationError(response, "Некорректный формат JSON");
+                        return;
+                    }
+
+                    if (loginData == null || string.IsNullOrEmpty(loginData.Email) || string.IsNullOrEmpty(loginData.Password))
+                    {
+                        WriteValidationError(response, "Email и пароль обязательны");
+                        return;
+                    }
+
+                    // Поиск пользователя
+                    var user = _users.FirstOrDefault(u => u.Email.Equals(loginData.Email, StringComparison.OrdinalIgnoreCase));
+
+                    if (user == null || !VerifyPassword(loginData.Password, user.PasswordHash))
+                    {
+                        var errorResponse = new
+                        {
+                            error = "Unauthorized",
+                            message = "Неверный email или пароль"
+                        };
+                        string json = JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+                        WriteJson(response, json, 401);
+                        return;
+                    }
+
+                    // Генерация токена
+                    string token = GenerateJwtToken(user);
+
+                    var responseData = new LoginResponse
+                    {
+                        Token = token,
+                        Email = user.Email,
+                        ExpiresAt = DateTime.UtcNow.AddMinutes(JwtExpirationMinutes),
+                        Name = user.Name
+                    };
+
+                    WriteSuccess(response, responseData);
+                    Console.WriteLine($"Успешный вход: {user.Email}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка в HandleLogin: {ex.Message}");
+                WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
+            }
+        }
+
+        // Обработчики для задач (защищенные)
+        static void HandleGetTasks(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
+            try
+            {
                 var queryParams = ParseQueryString(request.Url.Query);
-                var filteredTasks = _tasks.AsEnumerable();
+                var filteredTasks = _tasks.Where(t => t.UserId == user.Id).AsEnumerable();
 
                 if (queryParams.ContainsKey("iscompleted"))
                 {
@@ -378,7 +727,13 @@ namespace _10_2
 
         static void HandleGetTaskById(HttpListenerRequest request, HttpListenerResponse response, int id)
         {
-            var task = _tasks.FirstOrDefault(t => t.Id == id);
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
+            var task = _tasks.FirstOrDefault(t => t.Id == id && t.UserId == user.Id);
             if (task == null)
             {
                 WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
@@ -390,6 +745,12 @@ namespace _10_2
 
         static void HandleSearchTasks(HttpListenerRequest request, HttpListenerResponse response)
         {
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
             var queryParams = ParseQueryString(request.Url.Query);
 
             if (!queryParams.ContainsKey("query"))
@@ -400,9 +761,9 @@ namespace _10_2
 
             string searchQuery = queryParams["query"].ToLower();
 
-            var results = _tasks.Where(t =>
-                t.Title.ToLower().Contains(searchQuery) ||
-                (t.Description != null && t.Description.ToLower().Contains(searchQuery))
+            var results = _tasks.Where(t => t.UserId == user.Id &&
+                (t.Title.ToLower().Contains(searchQuery) ||
+                (t.Description != null && t.Description.ToLower().Contains(searchQuery)))
             ).ToList();
 
             WriteSuccess(response, results);
@@ -410,16 +771,24 @@ namespace _10_2
 
         static void HandleGetStats(HttpListenerRequest request, HttpListenerResponse response)
         {
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
+            var userTasks = _tasks.Where(t => t.UserId == user.Id).ToList();
+
             var stats = new
             {
-                total = _tasks.Count,
-                completed = _tasks.Count(t => t.IsCompleted),
-                notCompleted = _tasks.Count(t => !t.IsCompleted),
+                total = userTasks.Count,
+                completed = userTasks.Count(t => t.IsCompleted),
+                notCompleted = userTasks.Count(t => !t.IsCompleted),
                 byPriority = new
                 {
-                    high = _tasks.Count(t => t.Priority.ToLower() == "high"),
-                    medium = _tasks.Count(t => t.Priority.ToLower() == "medium"),
-                    low = _tasks.Count(t => t.Priority.ToLower() == "low")
+                    high = userTasks.Count(t => t.Priority.ToLower() == "high"),
+                    medium = userTasks.Count(t => t.Priority.ToLower() == "medium"),
+                    low = userTasks.Count(t => t.Priority.ToLower() == "low")
                 }
             };
 
@@ -428,6 +797,12 @@ namespace _10_2
 
         static void HandleCreateTask(HttpListenerRequest request, HttpListenerResponse response)
         {
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
             try
             {
                 using (var reader = new StreamReader(request.InputStream, Encoding.UTF8))
@@ -505,7 +880,8 @@ namespace _10_2
                         Priority = !string.IsNullOrEmpty(requestData.Priority) ? requestData.Priority.ToLower() : "medium",
                         IsCompleted = requestData.IsCompleted,
                         CreatedAt = DateTime.Now,
-                        DueDate = requestData.DueDate
+                        DueDate = requestData.DueDate,
+                        UserId = user.Id
                     };
 
                     _tasks.Add(newTask);
@@ -522,9 +898,15 @@ namespace _10_2
 
         static void HandleUpdateTask(HttpListenerRequest request, HttpListenerResponse response, int id)
         {
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
             try
             {
-                var existingTask = _tasks.FirstOrDefault(t => t.Id == id);
+                var existingTask = _tasks.FirstOrDefault(t => t.Id == id && t.UserId == user.Id);
                 if (existingTask == null)
                 {
                     WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
@@ -620,7 +1002,13 @@ namespace _10_2
 
         static void HandleDeleteTask(HttpListenerRequest request, HttpListenerResponse response, int id)
         {
-            var task = _tasks.FirstOrDefault(t => t.Id == id);
+            if (!CheckAuthorization(request, response))
+                return;
+
+            if (!TryGetUserFromToken(request, out User user))
+                return;
+
+            var task = _tasks.FirstOrDefault(t => t.Id == id && t.UserId == user.Id);
             if (task == null)
             {
                 WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
