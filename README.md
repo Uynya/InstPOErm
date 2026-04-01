@@ -1,5 +1,16 @@
+1. добавлена JWT-авторизация
+2. добавлены endpoints /api/auth/register и /api/auth/login
+3. реализована генерация и валидация JWT токенов
+4. защищены все маршруты для работы с задачами
+5. добавлено хэширование паролей 
+6. добавлена привязка задач к пользователям
+   
 проверка:
-<img width="1073" height="903" alt="image" src="https://github.com/user-attachments/assets/3e84571d-6f9a-425d-9b41-76d46ff0c59b" />
-<img width="1079" height="920" alt="image" src="https://github.com/user-attachments/assets/fe3abf8c-41b9-412c-8746-91917119d2c1" />
-<img width="1040" height="876" alt="image" src="https://github.com/user-attachments/assets/7341230f-1b2f-45f4-899e-f72f05580472" />
-<img width="1029" height="904" alt="image" src="https://github.com/user-attachments/assets/bd565564-cc0d-4c5e-b76d-578f0e2915bf" />
+
+<img width="1105" height="769" alt="image" src="https://github.com/user-attachments/assets/83924bae-a731-4b9c-b8dc-f739f2ca2447" />
+<img width="1077" height="731" alt="image" src="https://github.com/user-attachments/assets/6da54144-357e-4d7d-8b7b-7806cfe9833b" />
+<img width="855" height="698" alt="image" src="https://github.com/user-attachments/assets/c0c7c776-787f-4d2c-90f4-becd73359e4b" />
+<img width="1076" height="781" alt="image" src="https://github.com/user-attachments/assets/22c97ad3-5d18-45d1-bbd9-2d4c6694646f" />
+<img width="1109" height="920" alt="image" src="https://github.com/user-attachments/assets/d1d0b605-48ef-4a49-98b8-b038d8500f13" />
+
+без токена или с неверным токеном выдаёт ошибку
