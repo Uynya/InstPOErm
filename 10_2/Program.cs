@@ -8,6 +8,8 @@ using System.Text.Json;
 
 namespace _10_2
 {
+    
+
     public class ApiResponse<T>
     {
         public T Data { get; set; }
@@ -52,6 +54,97 @@ namespace _10_2
         public DateTime? DueDate { get; set; }
     }
 
+    public class AppConfig
+    {
+        public List<string> ListenUrls { get; set; }
+        public string LogLevel { get; set; }
+        public string LogFilePath { get; set; }
+        public bool EnableFileLogging { get; set; }
+
+        public AppConfig()
+        {
+            ListenUrls = new List<string> { "http://localhost:5000/" };
+            LogLevel = "Information";
+            LogFilePath = "logs/app.log";
+            EnableFileLogging = true;
+        }
+    }
+
+    // ==================== ЛОГГЕР ====================
+
+    public static class AppLogger
+    {
+        private static AppConfig _config;
+        private static readonly object _fileLock = new object();
+
+        public static void Initialize(AppConfig config)
+        {
+            _config = config;
+        }
+
+        private static bool ShouldLog(string level)
+        {
+            if (_config == null) return true;
+
+            var levels = new string[] { "Error", "Warning", "Information", "Debug" };
+            var configIndex = Array.IndexOf(levels, _config.LogLevel ?? "Information");
+            var messageIndex = Array.IndexOf(levels, level);
+
+            return messageIndex <= configIndex;
+        }
+
+        public static void LogInfo(string message)
+        {
+            Write("INFO", message);
+        }
+
+        public static void LogWarning(string message)
+        {
+            Write("WARN", message);
+        }
+
+        public static void LogError(string message, Exception ex = null)
+        {
+            var fullMessage = message;
+            if (ex != null)
+            {
+                fullMessage = message + ": " + ex.Message;
+            }
+            Write("ERROR", fullMessage);
+        }
+
+        private static void Write(string level, string message)
+        {
+            if (!ShouldLog(level)) return;
+
+            var timestamp = DateTime.UtcNow.ToString("O");
+            var line = string.Format("[{0}] [{1}] {2}", timestamp, level, message);
+
+            Console.WriteLine(line);
+
+            if (_config != null && _config.EnableFileLogging && !string.IsNullOrEmpty(_config.LogFilePath))
+            {
+                try
+                {
+                    lock (_fileLock)
+                    {
+                        var dir = Path.GetDirectoryName(_config.LogFilePath);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        {
+                            Directory.CreateDirectory(dir);
+                        }
+                        File.AppendAllText(_config.LogFilePath, line + Environment.NewLine);
+                    }
+                }
+                catch (Exception fileEx)
+                {
+                    Console.WriteLine("[ERROR] Failed to write to log file: " + fileEx.Message);
+                }
+            }
+        }
+    }
+
+
     class Program
     {
         static List<TaskItem> _tasks = new List<TaskItem>
@@ -85,100 +178,189 @@ namespace _10_2
             }
         };
 
+        static AppConfig _config;
+
         static void Main(string[] args)
         {
-            HttpListener listener = new HttpListener();
-            listener.Prefixes.Add("http://localhost:5000/");
-            listener.Start();
+            LoadConfiguration();
 
-            Console.WriteLine("Сервер запущен: http://localhost:5000/");
+            AppLogger.Initialize(_config);
+            AppLogger.LogInfo("=== Приложение запускается ===");
+            AppLogger.LogInfo("Уровень логов: " + _config.LogLevel);
+            AppLogger.LogInfo("Логирование в файл: " + (_config.EnableFileLogging ? "включено" : "выключено"));
+
+            HttpListener listener = new HttpListener();
+            foreach (var url in _config.ListenUrls)
+            {
+                listener.Prefixes.Add(url);
+                AppLogger.LogInfo("Прослушивается: " + url);
+            }
+
+            listener.Start();
+            AppLogger.LogInfo("Сервер запущен и готов к обработке запросов");
 
             while (true)
             {
                 try
                 {
                     HttpListenerContext context = listener.GetContext();
-                    HttpListenerRequest request = context.Request;
-                    HttpListenerResponse response = context.Response;
-
-                    string path = request.Url.AbsolutePath.ToLower();
-                    string method = request.HttpMethod;
-
-                    Console.WriteLine($"[{DateTime.Now}] {method} {path}");
-
-                    try
-                    {
-                        if (path == "/api/tasks" && method == "GET")
-                        {
-                            HandleGetTasks(request, response);
-                        }
-                        else if (path == "/api/tasks/search" && method == "GET")
-                        {
-                            HandleSearchTasks(request, response);
-                        }
-                        else if (path == "/api/tasks/stats" && method == "GET")
-                        {
-                            HandleGetStats(request, response);
-                        }
-                        else if (path.StartsWith("/api/tasks/") && method == "GET")
-                        {
-                            string idStr = path.Replace("/api/tasks/", "");
-                            if (int.TryParse(idStr, out int id))
-                            {
-                                HandleGetTaskById(request, response, id);
-                            }
-                            else
-                            {
-                                WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
-                            }
-                        }
-                        else if (path == "/api/tasks" && method == "POST")
-                        {
-                            HandleCreateTask(request, response);
-                        }
-                        else if (path.StartsWith("/api/tasks/") && method == "PUT")
-                        {
-                            string idStr = path.Replace("/api/tasks/", "");
-                            if (int.TryParse(idStr, out int id))
-                            {
-                                HandleUpdateTask(request, response, id);
-                            }
-                            else
-                            {
-                                WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
-                            }
-                        }
-                        else if (path.StartsWith("/api/tasks/") && method == "DELETE")
-                        {
-                            string idStr = path.Replace("/api/tasks/", "");
-                            if (int.TryParse(idStr, out int id))
-                            {
-                                HandleDeleteTask(request, response, id);
-                            }
-                            else
-                            {
-                                WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
-                            }
-                        }
-                        else
-                        {
-                            WriteError(response, 404, $"Endpoint {path} не найден", "NOT_FOUND");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Ошибка: {ex.Message}");
-                        WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
-                    }
+                    HandleRequest(context);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Критическая ошибка: {ex.Message}");
+                    AppLogger.LogError("Критическая ошибка в главном цикле", ex);
                 }
             }
         }
 
-        static void WriteJson(HttpListenerResponse response, string json, int statusCode = 200)
+        static void LoadConfiguration()
+        {
+            _config = new AppConfig();
+
+            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+
+            if (File.Exists(configPath))
+            {
+                try
+                {
+                    var json = File.ReadAllText(configPath);
+                    var options = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    };
+                    var loadedConfig = JsonSerializer.Deserialize<AppConfig>(json, options);
+
+                    if (loadedConfig != null)
+                    {
+                        if (loadedConfig.ListenUrls != null && loadedConfig.ListenUrls.Count > 0)
+                            _config.ListenUrls = loadedConfig.ListenUrls;
+                        if (!string.IsNullOrEmpty(loadedConfig.LogLevel))
+                            _config.LogLevel = loadedConfig.LogLevel;
+                        if (!string.IsNullOrEmpty(loadedConfig.LogFilePath))
+                            _config.LogFilePath = loadedConfig.LogFilePath;
+                        _config.EnableFileLogging = loadedConfig.EnableFileLogging;
+                    }
+
+                    AppLogger.LogInfo("Конфигурация загружена из: " + configPath);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.LogWarning("Не удалось загрузить конфигурацию, используются значения по умолчанию: " + ex.Message);
+                }
+            }
+            else
+            {
+                AppLogger.LogWarning("Файл конфигурации не найден: " + configPath);
+            }
+
+           
+            var envPort = Environment.GetEnvironmentVariable("API_PORT");
+            if (!string.IsNullOrEmpty(envPort) && _config.ListenUrls.Count > 0)
+            {
+                try
+                {
+                    var uri = new Uri(_config.ListenUrls[0]);
+                    var newUrl = string.Format("http://localhost:{0}/", envPort);
+                    _config.ListenUrls[0] = newUrl;
+                    AppLogger.LogInfo("Порт переопределён из переменной окружения: " + envPort);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.LogWarning("Не удалось применить API_PORT: " + ex.Message);
+                }
+            }
+
+            var envLogLevel = Environment.GetEnvironmentVariable("LOG_LEVEL");
+            if (!string.IsNullOrEmpty(envLogLevel))
+            {
+                _config.LogLevel = envLogLevel;
+            }
+        }
+
+        static void HandleRequest(HttpListenerContext context)
+        {
+            var request = context.Request;
+            var response = context.Response;
+
+            var path = request.Url.AbsolutePath.ToLower();
+            var method = request.HttpMethod;
+
+            AppLogger.LogInfo(string.Format("Входящий запрос: {0} {1}", method, path));
+
+            try
+            {
+             
+                if (path == "/api/tasks" && method == "GET")
+                {
+                    HandleGetTasks(request, response);
+                }
+                else if (path == "/api/tasks/search" && method == "GET")
+                {
+                    HandleSearchTasks(request, response);
+                }
+                else if (path == "/api/tasks/stats" && method == "GET")
+                {
+                    HandleGetStats(request, response);
+                }
+                else if (path.StartsWith("/api/tasks/") && method == "GET")
+                {
+                    var idStr = path.Replace("/api/tasks/", "");
+                    if (int.TryParse(idStr, out int id))
+                    {
+                        HandleGetTaskById(request, response, id);
+                    }
+                    else
+                    {
+                        AppLogger.LogWarning("Некорректный ID в запросе: " + idStr);
+                        WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
+                    }
+                }
+                else if (path == "/api/tasks" && method == "POST")
+                {
+                    HandleCreateTask(request, response);
+                }
+                else if (path.StartsWith("/api/tasks/") && method == "PUT")
+                {
+                    var idStr = path.Replace("/api/tasks/", "");
+                    if (int.TryParse(idStr, out int id))
+                    {
+                        HandleUpdateTask(request, response, id);
+                    }
+                    else
+                    {
+                        AppLogger.LogWarning("Некорректный ID в запросе: " + idStr);
+                        WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
+                    }
+                }
+                else if (path.StartsWith("/api/tasks/") && method == "DELETE")
+                {
+                    var idStr = path.Replace("/api/tasks/", "");
+                    if (int.TryParse(idStr, out int id))
+                    {
+                        HandleDeleteTask(request, response, id);
+                    }
+                    else
+                    {
+                        AppLogger.LogWarning("Некорректный ID в запросе: " + idStr);
+                        WriteError(response, 400, "Некорректный формат ID", "INVALID_ID");
+                    }
+                }
+                else
+                {
+                    AppLogger.LogWarning(string.Format("Endpoint не найден: {0} {1}", method, path));
+                    WriteError(response, 404, string.Format("Endpoint {0} не найден", path), "NOT_FOUND");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError(string.Format("Ошибка обработки запроса {0} {1}", method, path), ex);
+                WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
+            }
+        }
+
+        
+
+        static void WriteJson(HttpListenerResponse response, string json, int statusCode)
         {
             response.StatusCode = statusCode;
             response.ContentType = "application/json; charset=utf-8";
@@ -189,18 +371,19 @@ namespace _10_2
             response.Close();
         }
 
-        static void WriteSuccess<T>(HttpListenerResponse response, T data, int statusCode = 200)
+        static void WriteSuccess<T>(HttpListenerResponse response, T data, int statusCode)
         {
             var apiResponse = new ApiResponse<T>
             {
                 Data = data,
                 Error = null
             };
-            string json = JsonSerializer.Serialize(apiResponse, new JsonSerializerOptions { WriteIndented = true });
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(apiResponse, options);
             WriteJson(response, json, statusCode);
         }
 
-        static void WriteError(HttpListenerResponse response, int statusCode, string message, string code = null)
+        static void WriteError(HttpListenerResponse response, int statusCode, string message, string code)
         {
             var apiResponse = new ApiResponse<object>
             {
@@ -211,7 +394,8 @@ namespace _10_2
                     Code = code ?? statusCode.ToString()
                 }
             };
-            string json = JsonSerializer.Serialize(apiResponse, new JsonSerializerOptions { WriteIndented = true });
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(apiResponse, options);
             WriteJson(response, json, statusCode);
         }
 
@@ -222,18 +406,23 @@ namespace _10_2
                 Error = "Ошибка валидации",
                 Errors = errors
             };
-            string json = JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(errorResponse, options);
             WriteJson(response, json, 400);
         }
 
         static void WriteValidationError(HttpListenerResponse response, string message)
         {
+            var errors = new List<ValidationError>();
+            errors.Add(new ValidationError { Field = "", Message = message });
+
             var errorResponse = new ValidationErrorResponse
             {
                 Error = "Ошибка валидации",
-                Errors = new List<ValidationError> { new ValidationError { Field = "", Message = message } }
+                Errors = errors
             };
-            string json = JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(errorResponse, options);
             WriteJson(response, json, 400);
         }
 
@@ -264,11 +453,14 @@ namespace _10_2
             return result;
         }
 
+
         static void HandleGetTasks(HttpListenerRequest request, HttpListenerResponse response)
         {
             try
             {
                 var queryParams = ParseQueryString(request.Url.Query);
+                AppLogger.LogInfo(string.Format("Получение списка задач, фильтры: {0}", string.Join(", ", queryParams.Keys)));
+
                 var filteredTasks = _tasks.AsEnumerable();
 
                 if (queryParams.ContainsKey("iscompleted"))
@@ -287,7 +479,7 @@ namespace _10_2
                 if (queryParams.ContainsKey("priority"))
                 {
                     string priority = queryParams["priority"].ToLower();
-                    if (new[] { "low", "medium", "high" }.Contains(priority))
+                    if (new string[] { "low", "medium", "high" }.Contains(priority))
                     {
                         filteredTasks = filteredTasks.Where(t => t.Priority.ToLower() == priority);
                     }
@@ -317,13 +509,13 @@ namespace _10_2
                                 : filteredTasks.OrderBy(t => t.Title);
                             break;
                         case "priority":
-                            var priorityOrder = new[] { "high", "medium", "low" };
+                            var priorityOrder = new string[] { "high", "medium", "low" };
                             filteredTasks = direction == "desc"
                                 ? filteredTasks.OrderByDescending(t => Array.IndexOf(priorityOrder, t.Priority.ToLower()))
                                 : filteredTasks.OrderBy(t => Array.IndexOf(priorityOrder, t.Priority.ToLower()));
                             break;
                         default:
-                            WriteError(response, 400, $"Неподдерживаемая сортировка: {orderBy}", "INVALID_ORDERBY");
+                            WriteError(response, 400, string.Format("Неподдерживаемая сортировка: {0}", orderBy), "INVALID_ORDERBY");
                             return;
                     }
                 }
@@ -355,23 +547,26 @@ namespace _10_2
                     .Take(pageSize)
                     .ToList();
 
+                var pagination = new
+                {
+                    currentPage = page,
+                    pageSize = pageSize,
+                    totalItems = totalItems,
+                    totalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
+                };
+
                 var result = new
                 {
                     items = pagedTasks,
-                    pagination = new
-                    {
-                        currentPage = page,
-                        pageSize = pageSize,
-                        totalItems = totalItems,
-                        totalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
-                    }
+                    pagination = pagination
                 };
 
-                WriteSuccess(response, result);
+                AppLogger.LogInfo(string.Format("Возвращено {0} из {1} задач", pagedTasks.Count, totalItems));
+                WriteSuccess(response, result, 200);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка в HandleGetTasks: {ex.Message}");
+                AppLogger.LogError("Ошибка в HandleGetTasks", ex);
                 WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
             }
         }
@@ -381,11 +576,12 @@ namespace _10_2
             var task = _tasks.FirstOrDefault(t => t.Id == id);
             if (task == null)
             {
-                WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
+                AppLogger.LogWarning(string.Format("Задача с id {0} не найдена", id));
+                WriteError(response, 404, string.Format("Задача с id {0} не найдена", id), "TASK_NOT_FOUND");
                 return;
             }
 
-            WriteSuccess(response, task);
+            WriteSuccess(response, task, 200);
         }
 
         static void HandleSearchTasks(HttpListenerRequest request, HttpListenerResponse response)
@@ -399,13 +595,15 @@ namespace _10_2
             }
 
             string searchQuery = queryParams["query"].ToLower();
+            AppLogger.LogInfo(string.Format("Поиск задач по запросу: {0}", searchQuery));
 
             var results = _tasks.Where(t =>
                 t.Title.ToLower().Contains(searchQuery) ||
                 (t.Description != null && t.Description.ToLower().Contains(searchQuery))
             ).ToList();
 
-            WriteSuccess(response, results);
+            AppLogger.LogInfo(string.Format("Найдено {0} результатов", results.Count));
+            WriteSuccess(response, results, 200);
         }
 
         static void HandleGetStats(HttpListenerRequest request, HttpListenerResponse response)
@@ -423,7 +621,7 @@ namespace _10_2
                 }
             };
 
-            WriteSuccess(response, stats);
+            WriteSuccess(response, stats, 200);
         }
 
         static void HandleCreateTask(HttpListenerRequest request, HttpListenerResponse response)
@@ -436,6 +634,7 @@ namespace _10_2
 
                     if (string.IsNullOrWhiteSpace(body))
                     {
+                        AppLogger.LogWarning("Пустое тело запроса при создании задачи");
                         WriteValidationError(response, "Тело запроса не может быть пустым");
                         return;
                     }
@@ -449,8 +648,9 @@ namespace _10_2
                         };
                         requestData = JsonSerializer.Deserialize<CreateTaskRequest>(body, options);
                     }
-                    catch (JsonException)
+                    catch (JsonException ex)
                     {
+                        AppLogger.LogWarning("Ошибка парсинга JSON при создании задачи: " + ex.Message);
                         WriteValidationError(response, "Некорректный формат JSON");
                         return;
                     }
@@ -479,7 +679,7 @@ namespace _10_2
 
                     if (!string.IsNullOrEmpty(requestData.Priority))
                     {
-                        var validPriorities = new[] { "low", "medium", "high" };
+                        var validPriorities = new string[] { "low", "medium", "high" };
                         if (!validPriorities.Contains(requestData.Priority.ToLower()))
                         {
                             errors.Add(new ValidationError { Field = "Priority", Message = "Приоритет должен быть low, medium или high" });
@@ -493,6 +693,7 @@ namespace _10_2
 
                     if (errors.Count > 0)
                     {
+                        AppLogger.LogWarning(string.Format("Ошибка валидации: {0} ошибок", errors.Count));
                         WriteValidationErrors(response, errors);
                         return;
                     }
@@ -509,13 +710,15 @@ namespace _10_2
                     };
 
                     _tasks.Add(newTask);
-                    response.AddHeader("Location", $"/api/tasks/{newTask.Id}");
+                    response.AddHeader("Location", string.Format("/api/tasks/{0}", newTask.Id));
+
+                    AppLogger.LogInfo(string.Format("Создана задача #{0}: {1}", newTask.Id, newTask.Title));
                     WriteSuccess(response, newTask, 201);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка в HandleCreateTask: {ex.Message}");
+                AppLogger.LogError("Ошибка в HandleCreateTask", ex);
                 WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
             }
         }
@@ -527,7 +730,8 @@ namespace _10_2
                 var existingTask = _tasks.FirstOrDefault(t => t.Id == id);
                 if (existingTask == null)
                 {
-                    WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
+                    AppLogger.LogWarning(string.Format("Задача с id {0} не найдена для обновления", id));
+                    WriteError(response, 404, string.Format("Задача с id {0} не найдена", id), "TASK_NOT_FOUND");
                     return;
                 }
 
@@ -550,8 +754,9 @@ namespace _10_2
                         };
                         requestData = JsonSerializer.Deserialize<CreateTaskRequest>(body, options);
                     }
-                    catch (JsonException)
+                    catch (JsonException ex)
                     {
+                        AppLogger.LogWarning("Ошибка парсинга JSON при обновлении задачи: " + ex.Message);
                         WriteValidationError(response, "Некорректный формат JSON");
                         return;
                     }
@@ -576,7 +781,7 @@ namespace _10_2
 
                     if (!string.IsNullOrEmpty(requestData.Priority))
                     {
-                        var validPriorities = new[] { "low", "medium", "high" };
+                        var validPriorities = new string[] { "low", "medium", "high" };
                         if (!validPriorities.Contains(requestData.Priority.ToLower()))
                         {
                             errors.Add(new ValidationError { Field = "Priority", Message = "Приоритет должен быть low, medium или high" });
@@ -608,12 +813,13 @@ namespace _10_2
                     if (requestData.DueDate != null || body.Contains("\"dueDate\":null"))
                         existingTask.DueDate = requestData.DueDate;
 
-                    WriteSuccess(response, existingTask);
+                    AppLogger.LogInfo(string.Format("Обновлена задача #{0}", id));
+                    WriteSuccess(response, existingTask, 200);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка в HandleUpdateTask: {ex.Message}");
+                AppLogger.LogError("Ошибка в HandleUpdateTask", ex);
                 WriteError(response, 500, "Внутренняя ошибка сервера", "INTERNAL_ERROR");
             }
         }
@@ -623,12 +829,14 @@ namespace _10_2
             var task = _tasks.FirstOrDefault(t => t.Id == id);
             if (task == null)
             {
-                WriteError(response, 404, $"Задача с id {id} не найдена", "TASK_NOT_FOUND");
+                AppLogger.LogWarning(string.Format("Задача с id {0} не найдена для удаления", id));
+                WriteError(response, 404, string.Format("Задача с id {0} не найдена", id), "TASK_NOT_FOUND");
                 return;
             }
 
             _tasks.Remove(task);
-            WriteSuccess(response, new { message = "Задача успешно удалена" });
+            AppLogger.LogInfo(string.Format("Удалена задача #{0}", id));
+            WriteSuccess(response, new { message = "Задача успешно удалена" }, 200);
         }
     }
 }
